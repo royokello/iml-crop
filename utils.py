@@ -3,8 +3,9 @@ import logging
 import os
 import time
 import torch
+import csv
 
-from model import CropperNet
+from model import ViTCropper
 
 def setup_logging(working_dir):
     log_file_path = os.path.join(working_dir, 'training.log')
@@ -33,7 +34,7 @@ def get_model_by_name(device: torch.device, directory: str, name: str) -> torch.
     
     """
     
-    model = CropperNet()  # Initialize your model architecture
+    model = ViTCropper()  # Initialize your model architecture
 
     for file in os.listdir(directory):
         if file.startswith(name):
@@ -52,7 +53,7 @@ def get_model_by_latest(device: torch.device, directory: str|None=None) -> torch
     """
     Load a model whose model name is the latest time from the specified directory and move it to the specified device.
     """
-    model = CropperNet()
+    model = ViTCropper()
 
     if directory and os.path.exists(directory):
         model_files = [f for f in os.listdir(directory) if f.endswith('.pth')]
@@ -70,27 +71,41 @@ def get_model_by_latest(device: torch.device, directory: str|None=None) -> torch
     
     return model
 
-def get_labels(directory: str) -> dict[int, list[int]]:
+def get_labels(directory: str) -> dict[str, list[float]]:
     """
-    Load labels from a JSON file in the specified directory.
+    Load labels from a CSV file in the specified directory.
+    Format: img_name, x1, y1, height, ratio
+    where x1, y1, height are normalized to canvas size
+    ratio values: 0 for 1:1, 1 for 2:3, 2 for 3:2
     """
-    labels_file = os.path.join(directory, 'cropper', 'labels.json')
+    labels = {}
+    labels_file = os.path.join(directory, 'crop_labels.csv')
     if os.path.exists(labels_file):
-        with open(labels_file, 'r') as f:
-            labels = json.load(f)
-
-        labels = {int(k): v for k, v in labels.items()}
-    else:
-        labels = {}
+        with open(labels_file, 'r', newline='') as f:
+            reader = csv.reader(f)
+            next(reader, None)  # Skip header row
+            for row in reader:
+                if len(row) == 5:  # Ensure row has 5 columns (img_name, x1, y1, height, ratio)
+                    img_name = row[0]
+                    coords = [float(row[1]), float(row[2]), float(row[3]), int(row[4])]
+                    labels[img_name] = coords
     return labels
 
-def save_labels(directory: str, labels: dict[int, list[int]]):
+def save_labels(directory: str, labels: dict[str, list[float]]):
     """
-    Save labels to a JSON file in the specified directory.
+    Save labels to a CSV file in the specified directory.
+    Format: img_name, x1, y1, height, ratio
+    where x1, y1, height are normalized to canvas size
+    ratio values: 0 for 1:1, 1 for 2:3, 2 for 3:2
     """
-    labels_file = os.path.join(directory, 'cropper', 'labels.json')
-    with open(labels_file, 'w') as f:
-        json.dump(labels, f, indent=4)
+    labels_file = os.path.join(directory, 'crop_labels.csv')
+    os.makedirs(os.path.dirname(labels_file), exist_ok=True)
+    
+    with open(labels_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['img_name', 'x1', 'y1', 'height', 'ratio'])  # Updated header
+        for img_name, coords in labels.items():
+            writer.writerow([img_name, coords[0], coords[1], coords[2], int(coords[3])])
 
 def log_print(message):
     print(message)
