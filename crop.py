@@ -9,7 +9,7 @@ from utils import get_model_by_latest, get_model_by_name
 from predict import predict
 from train import find_album_directories
 from model import ViTCropper
-
+from dataset import resize_and_pad_square
 
 def main(root_dir: str, resolution: int = 1024, model_name: str|None=None):
     """
@@ -76,35 +76,26 @@ def main(root_dir: str, resolution: int = 1024, model_name: str|None=None):
             try:
                 # Skip if already processed with the same resolution
                 if os.path.exists(dst_path):
-                    # Check if the resolution matches
                     with Image.open(dst_path) as img:
                         if max(img.size) == resolution:
                             continue
                 
                 # Get crop predictions in the new format: (x1, y1, height, ratio_code)
-                x1, y1, height, ratio_code = predict(device, model, src_path)
+                x1, y1, height_norm, ratio_code = predict(device, model, src_path)
                 
                 # Open the source image
                 img = Image.open(src_path)
                 width, height_px = img.size
                 
-                # Create a virtual square canvas with height dimensions (high quality)
-                square_size = height_px
-                virtual_img = Image.new("RGB", (square_size, square_size), (0, 0, 0))
+                # Determine square dimension as the maximum of width and height.
+                square_size = max(width, height_px)
+                # Create a square image using the new function (with white background)
+                virtual_img, pad = resize_and_pad_square(img, target_size=square_size)
                 
-                # Calculate padding to center the image horizontally
-                padding_x = (square_size - width) // 2 if width < square_size else 0
-                
-                # Paste the original image onto the virtual square
-                virtual_img.paste(img, (padding_x, 0))
-                
-                # Calculate pixel coordinates in the virtual square
-                # Start with the top-left (x1, y1)
+                # Calculate pixel coordinates in the square image
                 x1_px = int(x1 * square_size)
                 y1_px = int(y1 * square_size)
-                
-                # Calculate crop height in pixels
-                crop_height_px = int(height * square_size)
+                crop_height_px = int(height_norm * square_size)
                 
                 # Calculate crop width based on the ratio code
                 if ratio_code == 0:  # 1:1 aspect ratio
@@ -114,23 +105,19 @@ def main(root_dir: str, resolution: int = 1024, model_name: str|None=None):
                 elif ratio_code == 2:  # 3:2 aspect ratio
                     crop_width_px = int(crop_height_px * (3/2))
                 else:
-                    # Default to 1:1 if ratio code is invalid
                     crop_width_px = crop_height_px
                 
                 # Calculate bottom-right coordinates
                 x2_px = x1_px + crop_width_px
                 y2_px = y1_px + crop_height_px
                 
-                # Crop the virtual image
+                # Crop the virtual square image
                 cropped_img = virtual_img.crop((x1_px, y1_px, x2_px, y2_px))
                 
-                # Resize to target resolution, maintaining aspect ratio
+                # Resize to target resolution, maintaining aspect ratio.
                 cropped_width, cropped_height = cropped_img.size
-                
-                # Always use resolution as the height, calculate appropriate width
                 new_height = resolution
                 new_width = int(cropped_width * (resolution / cropped_height))
-                
                 resized_img = cropped_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
                 
                 # Save the processed image
@@ -138,7 +125,6 @@ def main(root_dir: str, resolution: int = 1024, model_name: str|None=None):
                 
             except Exception as e:
                 print(f"Error processing {img_file}: {str(e)}")
-                # Copy the original image as a fallback
                 shutil.copy(src_path, dst_path)
     
     print("Processing completed.")

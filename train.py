@@ -315,8 +315,8 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", "-e", type=int, default=256, help="Number of epochs to train.")
     parser.add_argument("--learning_rate", "-lr", type=float, default=0.0001, help="Learning rate.")
     parser.add_argument("--batch_size", "-b", type=int, default=16, help="Batch size.")
-    parser.add_argument("--val_split", "-v", type=float, default=0.2, help="Validation split ratio.")
-    parser.add_argument("--patience", "-p", type=int, default=8, help="Early stopping patience.")
+    parser.add_argument("--val_split", "-v", type=float, default=0.25, help="Validation split ratio.")
+    parser.add_argument("--patience", "-p", type=int, default=16, help="Early stopping patience.")
     parser.add_argument("--model", "-m", type=str, default='google/vit-base-patch16-224', 
                         help="Pretrained model name from Hugging Face.")
     

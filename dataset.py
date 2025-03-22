@@ -7,37 +7,58 @@ from PIL import Image
 import torch.nn.functional as F
 
 
+from PIL import Image
+
 def resize_and_pad_square(image, target_size=224):
     """
     Resize an image to a square while maintaining aspect ratio and padding.
     
+    This function handles both portrait and landscape images:
+      - For landscape images, the width is resized to target_size and the image is centered vertically with padding on top and bottom.
+      - For portrait images (or square images), the height is resized to target_size and the image is centered horizontally with padding on the sides.
+    
     Args:
-        image: PIL Image
-        target_size: Target height (and width) for the square output
-        
+        image (PIL.Image): Input image.
+        target_size (int): Desired dimension (width and height) for the square output.
+    
     Returns:
-        Resized and padded PIL Image as a square
+        tuple: A tuple containing:
+            - square_image (PIL.Image): The resized and padded square image.
+            - padding (tuple): The applied padding in the format (padding_x, padding_y)
     """
-    # Get original dimensions
     width, height = image.size
     
-    # Determine scaling factor to match height to target_size
-    scale = target_size / height
-    new_width = int(width * scale)
+    if width >= height:
+        # Landscape image (or square) - scale width to target_size
+        scale = target_size / width
+        new_height = int(height * scale)
+        resized_image = image.resize((target_size, new_height), Image.LANCZOS)
+        
+        # Create a white square background
+        square_image = Image.new("RGB", (target_size, target_size), (255, 255, 255))
+        
+        # Calculate vertical padding (top and bottom)
+        padding_y = (target_size - new_height) // 2
+        
+        # Paste resized image centered vertically
+        square_image.paste(resized_image, (0, padding_y))
+        return square_image, (0, padding_y)
     
-    # Resize image to match target height while preserving aspect ratio
-    resized_image = image.resize((new_width, target_size), Image.LANCZOS)
-    
-    # Create a square blank image with padding
-    square_image = Image.new("RGB", (target_size, target_size), (0, 0, 0))
-    
-    # Calculate horizontal padding
-    padding_x = (target_size - new_width) // 2
-    
-    # Paste the resized image onto the square image
-    square_image.paste(resized_image, (padding_x, 0))
-    
-    return square_image, padding_x
+    else:
+        # Portrait image - scale height to target_size
+        scale = target_size / height
+        new_width = int(width * scale)
+        resized_image = image.resize((new_width, target_size), Image.LANCZOS)
+        
+        # Create a white square background
+        square_image = Image.new("RGB", (target_size, target_size), (255, 255, 255))
+        
+        # Calculate horizontal padding (left and right)
+        padding_x = (target_size - new_width) // 2
+        
+        # Paste resized image centered horizontally
+        square_image.paste(resized_image, (padding_x, 0))
+        return square_image, (padding_x, 0)
 
 
 class ImageDataset(Dataset):
