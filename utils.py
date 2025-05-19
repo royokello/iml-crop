@@ -1,93 +1,27 @@
-import json
-import logging
 import os
-import time
-import torch
-import csv
 
-from model import ViTCropper
-
-def setup_logging(working_dir):
-    log_file_path = os.path.join(working_dir, 'training.log')
-
-    logging.basicConfig(
-        filename=log_file_path,
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+def find_latest_stage(project: str) -> int:
+    """Find the latest stage in the project directory.
     
-def generate_model_name(base_model: str | None, samples: int, epochs: int) -> str:
-    """
-    Generate a unique model name based on current timestamp, base model (if any), number of samples, and epochs.
-    """
-    result = f"{int(time.time())}"
-    if base_model:
-        result += f"_b={base_model}"
-    
-    result += f"_s={samples}_e={epochs}"
-    
-    return result
-
-def get_model_by_name(device: torch.device, directory: str, name: str) -> torch.nn.Module:
-    """
-    
-    """
-    
-    model = ViTCropper()  # Initialize your model architecture
-
-    for file in os.listdir(directory):
-        if file.startswith(name):
-            model_path = os.path.join(directory, file)
-            break
-    else:
-        raise ValueError(f"No model starting with {name} found in {directory}")
-
-    model.load_state_dict(torch.load(model_path, map_location=device))
-
-    model = model.to(device)
-    
-    return model
-
-def get_model_by_latest(device: torch.device, directory: str|None=None) -> torch.nn.Module:
-    """
-    Load a model whose model name is the latest time from the specified directory and move it to the specified device.
-    """
-    model = ViTCropper()
-
-    if directory and os.path.exists(directory):
-        model_files = [f for f in os.listdir(directory) if f.endswith('.pth')]
-        if not model_files:
-            raise ValueError(f"No model files found in {directory}")
-
-        latest_model = max(model_files, key=lambda x: int(x.split('_')[0]))
-        print(f"latest model: {latest_model}")
+    Args:
+        project: Path to the project directory
         
-        model_path = os.path.join(directory, latest_model)
-
-        model.load_state_dict(torch.load(model_path, map_location=device))
-
-    model = model.to(device)
-    
-    return model
-
-
-def save_labels(directory: str, labels: dict[str, list[float]]):
+    Returns:
+        The highest stage number found
+        
+    Raises:
+        ValueError: If no stage directories are found
     """
-    Save labels to a CSV file in the specified directory.
-    Format: img_name, x1, y1, height, ratio
-    where x1, y1, height are normalized to canvas size
-    ratio is width/height normalized to 0-1 range
-    """
-    labels_file = os.path.join(directory, 'crop_labels.csv')
-    os.makedirs(os.path.dirname(labels_file), exist_ok=True)
+    stage_dirs = []
+    for item in os.listdir(project):
+        if os.path.isdir(os.path.join(project, item)) and item.startswith('stage_'):
+            try:
+                stage_num = int(item.split('_')[1])
+                stage_dirs.append(stage_num)
+            except (IndexError, ValueError):
+                continue
     
-    with open(labels_file, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['img_name', 'x1', 'y1', 'height', 'ratio'])  # Updated header
-        for img_name, coords in labels.items():
-            writer.writerow([img_name, coords[0], coords[1], coords[2], coords[3]])
-
-def log_print(message):
-    print(message)
-    logging.info(message)
+    if stage_dirs:
+        return max(stage_dirs)
+    else:
+        raise ValueError(f"No stage directories found in {project}. Create at least one stage directory (e.g., 'stage_1').")

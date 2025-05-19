@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from model import ViTCropper
 from dataset import get_loaders
 import size_conversion
+from utils import find_latest_stage
 
 
 def train_one_epoch(model: nn.Module,
@@ -103,7 +104,7 @@ def eval_one_epoch(model: nn.Module,
 
 
 def main(project: str,
-         base: str = None,
+         stage: int = None,
          num_epochs: int = 50,
          learning_rate: float = 1e-4,
          batch_size: int = 16,
@@ -120,11 +121,23 @@ def main(project: str,
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
+    
+    # If no stage provided, find the latest one
+    if stage is None:
+        try:
+            stage = find_latest_stage(project)
+            print(f"Using latest stage: {stage}")
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
+    
+    # Form the directory name from the stage number
+    stage_dir = f"stage_{stage}"
         
-    labels_file = os.path.join(project, f'{base}_crop_labels.csv')
-    model_path = os.path.join(project, f'{base}_crop_model.pth')
-    epoch_log_file = os.path.join(project, f"{base}_crop_epoch_log.csv")
-    image_dir = os.path.join(project, base)
+    labels_file = os.path.join(project, f'{stage_dir}_crop_labels.csv')
+    model_path = os.path.join(project, f'{stage_dir}_crop_model.pth')
+    epoch_log_file = os.path.join(project, f"{stage_dir}_crop_epoch_log.csv")
+    image_dir = os.path.join(project, stage_dir)
 
     # Clean old artifacts
     for fp in (model_path, epoch_log_file):
@@ -237,8 +250,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train ViTCropper model.")
     parser.add_argument('--project', required=True,
                         help='Root project directory containing data and labels')
-    parser.add_argument('--base', type=str, default=None,
-                        help='Base directory name within project containing images. If not provided, next crop_X directory will be used.')
+    parser.add_argument('--stage', type=int, default=None,
+                        help='Stage number to train (e.g., 1, 2, etc.). If not provided, uses the latest stage.')
     parser.add_argument('--epochs', '-e', type=int, default=50,
                         help='Number of epochs')
     parser.add_argument('--learning_rate', '-lr', type=float, default=1e-4,
@@ -255,7 +268,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     main(
         args.project,
-        args.base,
+        args.stage,
         args.epochs,
         args.learning_rate,
         args.batch_size,

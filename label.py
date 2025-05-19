@@ -789,11 +789,52 @@ def navigate_images():
         # This case should ideally not be reached if image_files is populated
         return jsonify(error="Image index out of bounds after action", img_name=None, index=current_image_index)
 
-def main(project: str, base: str = 'src'):
+def find_latest_stage(project: str) -> int:
+    """Find the latest stage in the project directory.
+    
+    Args:
+        project: Path to the project directory
+        
+    Returns:
+        The highest stage number found
+        
+    Raises:
+        ValueError: If no stage directories are found
+    """
+    stage_dirs = []
+    for item in os.listdir(project):
+        if os.path.isdir(os.path.join(project, item)) and item.startswith('stage_'):
+            try:
+                stage_num = int(item.split('_')[1])
+                stage_dirs.append(stage_num)
+            except (IndexError, ValueError):
+                continue
+    
+    if stage_dirs:
+        return max(stage_dirs)
+    else:
+        raise ValueError(f"No stage directories found in {project}. Create at least one stage directory (e.g., 'stage_1').")
+
+def main(project: str, stage: int = None):
     global image_dir, image_files, labels, labels_file, current_image_index
     
-    image_dir = os.path.join(project, base)
-    if not os.path.exists(image_dir): print(f"Error: {base} not found"); return
+    # If no stage provided, find the latest one
+    if stage is None:
+        try:
+            stage = find_latest_stage(project)
+            print(f"Using latest stage: {stage}")
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
+    
+    # Form the directory name from the stage number
+    stage_dir = f"stage_{stage}"
+    
+    # Check if the directory exists
+    image_dir = os.path.join(project, stage_dir)
+    if not os.path.exists(image_dir):
+        print(f"Error: Stage directory 'stage_{stage}' not found in {project}")
+        return
     
     image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('.png','.jpg','.jpeg','.gif','.bmp'))]
     if image_files:
@@ -802,7 +843,7 @@ def main(project: str, base: str = 'src'):
         current_image_index = -1
     
     labels = {}
-    labels_file = os.path.join(project, f'{base}_crop_labels.csv')
+    labels_file = os.path.join(project, f'stage_{stage}_crop_labels.csv')
 
     if os.path.exists(labels_file):
         with open(labels_file, 'r', newline='') as f:
@@ -842,8 +883,10 @@ def main(project: str, base: str = 'src'):
     app.run(host='0.0.0.0', port=5000, debug=True)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--project', type=str)
-    parser.add_argument('--base', type=str, default='src')
+    parser = argparse.ArgumentParser(description="Launch web interface for labeling images.")
+    parser.add_argument('--project', type=str, required=True,
+                        help='Root project directory containing image directories')
+    parser.add_argument('--stage', type=int, default=None,
+                        help='Stage number to label (e.g., 1, 2, etc.). If not provided, uses the latest stage.')
     args = parser.parse_args()
-    main(args.project, args.base)
+    main(args.project, args.stage)
