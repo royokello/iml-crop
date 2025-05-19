@@ -71,32 +71,13 @@ def get_model_by_latest(device: torch.device, directory: str|None=None) -> torch
     
     return model
 
-def get_labels(directory: str) -> dict[str, list[float]]:
-    """
-    Load labels from a CSV file in the specified directory.
-    Format: img_name, x1, y1, height, ratio
-    where x1, y1, height are normalized to canvas size
-    ratio values: 0 for 1:1, 1 for 2:3, 2 for 3:2
-    """
-    labels = {}
-    labels_file = os.path.join(directory, 'crop_labels.csv')
-    if os.path.exists(labels_file):
-        with open(labels_file, 'r', newline='') as f:
-            reader = csv.reader(f)
-            next(reader, None)  # Skip header row
-            for row in reader:
-                if len(row) == 5:  # Ensure row has 5 columns (img_name, x1, y1, height, ratio)
-                    img_name = row[0]
-                    coords = [float(row[1]), float(row[2]), float(row[3]), int(row[4])]
-                    labels[img_name] = coords
-    return labels
 
 def save_labels(directory: str, labels: dict[str, list[float]]):
     """
     Save labels to a CSV file in the specified directory.
     Format: img_name, x1, y1, height, ratio
     where x1, y1, height are normalized to canvas size
-    ratio values: 0 for 1:1, 1 for 2:3, 2 for 3:2
+    ratio is width/height normalized to 0-1 range
     """
     labels_file = os.path.join(directory, 'crop_labels.csv')
     os.makedirs(os.path.dirname(labels_file), exist_ok=True)
@@ -105,7 +86,7 @@ def save_labels(directory: str, labels: dict[str, list[float]]):
         writer = csv.writer(f)
         writer.writerow(['img_name', 'x1', 'y1', 'height', 'ratio'])  # Updated header
         for img_name, coords in labels.items():
-            writer.writerow([img_name, coords[0], coords[1], coords[2], int(coords[3])])
+            writer.writerow([img_name, coords[0], coords[1], coords[2], coords[3]])
 
 def log_print(message):
     print(message)
