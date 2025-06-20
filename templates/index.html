@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IML Crop</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #controls { margin-bottom: 20px; }
+        #controls ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
+        #controls li { display: flex; align-items: center; gap: 5px; }
+        #image-area { width: 512px; height: 512px; border: 1px solid #ccc; position: relative; overflow: hidden; }
+        #image-canvas { width: 100%; height: 100%; }
+        #crop-box { position: absolute; border: 2px solid red; box-sizing: border-box; cursor: move; }
+        .grid-line { position: absolute; background: rgba(255,0,0,0.5); }
+    </style>
+</head>
+<body>
+
+<h1>IML Crop</h1>
+<div id="controls">
+    <ul>
+        <li><span id="current-info">0 / 0 (0 labelled)</span></li>
+        <li><button id="prevBtn">Prev</button></li>
+        <li><button id="nextBtn">Next</button></li>
+        <li><button id="randomBtn">Random</button></li>
+        <li><button id="prevLabelledBtn">Prev Labelled</button></li>
+        <li><button id="nextLabelledBtn">Next Labelled</button></li>
+        <li><button id="saveBtn">Save Label</button></li>
+        <li><button id="deleteBtn">Delete Label</button></li>
+        <li>
+            Width step:
+            <select id="widthStepSelect">
+                <option value="8">8</option>
+                <option value="16">16</option>
+                <option value="32" selected>32</option>
+                <option value="64">64</option>
+            </select>
+            Width:
+            <select id="widthSelect"></select> px
+        </li>
+        <li>Ratio: <select id="ratioSelect"></select></li>
+    </ul>
+</div>
+<div id="image-area">
+    <canvas id="image-canvas" width="512" height="512"></canvas>
+    <div id="crop-box"></div>
+</div>
+
+<script>
+// Initial data
+const totalImages = {{ total_images }};
+let currentIndex = {{ current_index }};
+let totalLabels = {{ total_labels }};
+const ratioCounts = {{ ratio_stats|tojson }};
+let firstDraw = true;
+
+// DOM elements
+const infoEl = document.getElementById('current-info');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const randomBtn = document.getElementById('randomBtn');
+const prevLblBtn = document.getElementById('prevLabelledBtn');
+const nextLblBtn = document.getElementById('nextLabelledBtn');
+const saveBtn = document.getElementById('saveBtn');
+const deleteBtn = document.getElementById('deleteBtn');
+const widthStepSelect = document.getElementById('widthStepSelect');
+const widthSelect = document.getElementById('widthSelect');
+const ratioSelect = document.getElementById('ratioSelect');
+const canvas = document.getElementById('image-canvas');
+const ctx = canvas.getContext('2d');
+const cropBox = document.getElementById('crop-box');
+
+// Populate width options based on step, defaulting to 256px if available
+function populateWidthOptions() {
+    const step = parseInt(widthStepSelect.value, 10);
+    widthSelect.innerHTML = '';
+    for (let w = step; w <= 512; w += step) {
+        const opt = document.createElement('option'); opt.value = w; opt.textContent = w;
+        widthSelect.appendChild(opt);
+    }
+    if (widthSelect.querySelector('option[value="256"]')) {
+        widthSelect.value = '256';
+    } else if (widthSelect.options.length) {
+        widthSelect.value = widthSelect.options[0].value;
+    }
+}
+
+// Draw 3×3 grid
+function createGrid() {
+    cropBox.innerHTML = '';
+    for (let i = 1; i <= 2; i++) {
+        const v = document.createElement('div'); v.className = 'grid-line'; v.style.width = '2px'; v.style.height = '100%'; v.style.left = `${(i/3)*100}%`;
+        cropBox.appendChild(v);
+        const h = document.createElement('div'); h.className = 'grid-line'; h.style.height = '2px'; h.style.width = '100%'; h.style.top = `${(i/3)*100}%`;
+        cropBox.appendChild(h);
+    }
+}
+
+// Info & ratio
+function updateInfo() { infoEl.textContent = `${currentIndex+1} / ${totalImages} (${totalLabels} labelled)`; }
+function updateRatioOptions() {
+    ratioSelect.innerHTML = '';
+    Object.keys(ratioCounts).forEach(r => {
+        const opt = document.createElement('option'); opt.value = r; opt.textContent = `${r} (${ratioCounts[r]})`;
+        ratioSelect.appendChild(opt);
+    });
+    if (ratioSelect.options.length) ratioSelect.value = ratioSelect.options[0].value;
+}
+
+// Main draw function
+async function loadImage() {
+    createGrid();
+    const res = await fetch(`/image/${currentIndex}`);
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const img = new Image(); img.src = url;
+    await new Promise(r => img.onload = r);
+    ctx.clearRect(0,0,512,512);
+    const scale = Math.min(512/img.width, 512/img.height);
+    const iw = img.width * scale, ih = img.height * scale;
+    ctx.drawImage(img, (512-iw)/2, (512-ih)/2, iw, ih);
+    URL.revokeObjectURL(url);
+
+    const header = res.headers.get('X-Label');
+    let x_px, y_px, w_px, r;
+    if (header) {
+        // Existing label: restore saved position & size
+        const lbl = JSON.parse(header);
+        x_px = lbl.x * 512;
+        y_px = lbl.y * 512;
+        w_px = lbl.width * 512;
+        r = lbl.ratio;
+        ratioSelect.value = r;
+        populateWidthOptions();
+        widthSelect.value = Math.round(w_px);
+    } else {
+        // New label or width/step change: preserve crop origin
+        w_px = parseInt(widthSelect.value, 10);
+        r = ratioSelect.value;
+        if (firstDraw) {
+            x_px = (512 - w_px) / 2;
+            y_px = (512 - (w_px * r.split(/[:\/]/).map(Number)[1] / r.split(/[:\/]/).map(Number)[0])) / 2;
+        } else {
+            x_px = parseFloat(cropBox.style.left);
+            y_px = parseFloat(cropBox.style.top);
+        }
+    }
+    const [rw, rh] = r.split(/[:\/]/).map(Number);
+    const h_px = Math.round(w_px * rh / rw);
+
+    // Clamp to image boundaries
+    x_px = Math.max(0, Math.min(512 - w_px, x_px));
+    y_px = Math.max(0, Math.min(512 - h_px, y_px));
+
+    // Apply styles
+    cropBox.style.width = `${w_px}px`;
+    cropBox.style.height = `${h_px}px`;
+    cropBox.style.left = `${Math.round(x_px)}px`;
+    cropBox.style.top = `${Math.round(y_px)}px`;
+
+    updateInfo(); firstDraw = false;
+}
+
+// Save label and load a new random image
+saveBtn.onclick = async () => {
+    const payload = {
+        index: currentIndex,
+        x: parseFloat(cropBox.style.left)/512,
+        y: parseFloat(cropBox.style.top)/512,
+        width: parseFloat(widthSelect.value,10)/512,
+        ratio: ratioSelect.value
+    };
+    const res = await fetch('/label', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    const data = await res.json();
+    totalLabels = data.total_labels;
+    Object.assign(ratioCounts, data.ratio_stats);
+    updateRatioOptions();
+    currentIndex = Math.floor(Math.random() * totalImages);
+    firstDraw = true;
+    loadImage();
+};
+
+// Delete label and redraw
+deleteBtn.onclick = async () => {
+    const res = await fetch('/label', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ index: currentIndex, is_delete: true }) });
+    const data = await res.json();
+    totalLabels = data.total_labels;
+    Object.assign(ratioCounts, data.ratio_stats);
+    updateRatioOptions();
+    firstDraw = true;
+    loadImage();
+};
+
+// Navigation
+prevBtn.onclick = () => { currentIndex = (currentIndex - 1 + totalImages) % totalImages; firstDraw = true; loadImage(); };
+nextBtn.onclick = () => { currentIndex = (currentIndex + 1) % totalImages; firstDraw = true; loadImage(); };
+randomBtn.onclick = () => { currentIndex = Math.floor(Math.random() * totalImages); firstDraw = true; loadImage(); };
+
+prevLblBtn.onclick = async () => {
+    const res = await fetch('/navigate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action: 'prev_labelled' }) });
+    const data = await res.json();
+    if (!data.error) {
+        currentIndex = data.index;
+        totalLabels = data.total_labels;
+        Object.assign(ratioCounts, data.ratio_stats);
+        updateRatioOptions();
+        firstDraw = true;
+        loadImage();
+    }
+};
+nextLblBtn.onclick = async () => {
+    const res = await fetch('/navigate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action: 'next_labelled' }) });
+    const data = await res.json();
+    if (!data.error) {
+        currentIndex = data.index;
+        totalLabels = data.total_labels;
+        Object.assign(ratioCounts, data.ratio_stats);
+        updateRatioOptions();
+        firstDraw = true;
+        loadImage();
+    }
+};
+
+// Redraw handlers
+widthStepSelect.addEventListener('change', () => { firstDraw = false; populateWidthOptions(); loadImage(); });
+widthSelect.addEventListener('change', () => { firstDraw = false; loadImage(); });
+ratioSelect.addEventListener('change', () => { firstDraw = false; loadImage(); });
+
+// Drag logic
+let dragging = false, ox = 0, oy = 0;
+cropBox.addEventListener('mousedown', (e) => { dragging = true; ox = e.offsetX; oy = e.offsetY; });
+window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const rect = canvas.getBoundingClientRect();
+    let nx = e.clientX - rect.left - ox;
+    let ny = e.clientY - rect.top - oy;
+    nx = Math.max(0, Math.min(512 - parseInt(cropBox.style.width), nx));
+    ny = Math.max(0, Math.min(512 - parseInt(cropBox.style.height), ny));
+    cropBox.style.left = `${nx}px`;
+    cropBox.style.top = `${ny}px`;
+});
+window.addEventListener('mouseup', () => { dragging = false; });
+
+// Keyboard shortcuts (AWSD/R)
+window.addEventListener('keydown', (e) => {
+    switch (e.key) {
+        case 'w': case 'W':
+            if (widthSelect.selectedIndex < widthSelect.options.length - 1) {
+                widthSelect.selectedIndex++;
+                loadImage();
+            }
+            e.preventDefault();
+            break;
+        case 's': case 'S':
+            if (widthSelect.selectedIndex > 0) {
+                widthSelect.selectedIndex--;
+                loadImage();
+            }
+            e.preventDefault();
+            break;
+        case 'a': case 'A':
+            currentIndex = (currentIndex - 1 + totalImages) % totalImages;
+            firstDraw = true;
+            loadImage();
+            e.preventDefault();
+            break;
+        case 'd': case 'D':
+            currentIndex = (currentIndex + 1) % totalImages;
+            firstDraw = true;
+            loadImage();
+            e.preventDefault();
+            break;
+        case 'r': case 'R':
+            currentIndex = Math.floor(Math.random() * totalImages);
+            firstDraw = true;
+            loadImage();
+            e.preventDefault();
+            break;
+    }
+});
+
+// Initial setup
+window.addEventListener('load', () => {
+    populateWidthOptions();
+    updateRatioOptions();
+    loadImage();
+});
+
+</script>
+
+</body>
+</html>

@@ -1,106 +1,71 @@
 import argparse
 import os
 import json
-from typing import Tuple
-
-import pandas as pd
 import torch
 import torch.nn as nn
+from typing import Tuple
 from torch.utils.data import DataLoader
 
-from model import ViTCropper
+from model import IMLCropModel
 from dataset import get_loaders
-import size_conversion
 from utils import find_latest_stage
 
 
 def train_one_epoch(model: nn.Module,
                     loader: DataLoader,
                     coord_criterion: nn.Module,
-                    shape_criterion: nn.Module,
                     optimizer: torch.optim.Optimizer,
-                    device: torch.device) -> Tuple[float, float, float]:
+                    device: torch.device) -> float:
     """
-    Train the model for one epoch.
-
-    Args:
-        model: ViTCropper instance
-        loader: DataLoader yielding (imgs, (coords, shape_class))
-        coord_criterion: MSELoss for coordinates
-        shape_criterion: CrossEntropyLoss for shape classes
-        optimizer: optimizer instance
-        device: torch.device
+    Train the model for one epoch, tracking only coordinate loss.
 
     Returns:
-        Tuple of (total_loss, coord_loss, shape_loss) averages for the epoch.
+        avg_coord_loss
     """
     model.train()
-    running_loss = 0.0
     running_coord_loss = 0.0
-    running_shape_loss = 0.0
 
     for imgs, targets in loader:
         imgs = imgs.to(device)
-        coords_true = targets[0].to(device)  # [x, y] coordinates
-        shape_class = targets[1].to(device)  # shape class
+        coords_true, _ = targets  # Ignore ratio targets
+        coords_true = coords_true.to(device)
 
         optimizer.zero_grad()
-        coords_pred, shape_logits = model(imgs)
+        coords_pred, _ = model(imgs)  # Discard ratio logits
 
-        # Calculate losses
         loss_coords = coord_criterion(coords_pred, coords_true)
-        loss_shape = shape_criterion(shape_logits, shape_class)
-        # Use average of losses to balance their contributions
-        loss = (loss_coords + loss_shape) / 2
-
-        loss.backward()
+        loss_coords.backward()
         optimizer.step()
-        running_loss += loss.item()
-        running_coord_loss += loss_coords.item()
-        running_shape_loss += loss_shape.item()
 
-    return (running_loss / len(loader), 
-            running_coord_loss / len(loader), 
-            running_shape_loss / len(loader))
+        running_coord_loss += loss_coords.item()
+
+    return running_coord_loss / len(loader)
 
 
 def eval_one_epoch(model: nn.Module,
                    loader: DataLoader,
                    coord_criterion: nn.Module,
-                   shape_criterion: nn.Module,
-                   device: torch.device) -> Tuple[float, float, float]:
+                   device: torch.device) -> float:
     """
-    Evaluate the model for one epoch.
+    Evaluate the model for one epoch, tracking only coordinate loss.
 
     Returns:
-        Tuple of (total_loss, coord_loss, shape_loss) averages for the epoch.
+        avg_coord_loss
     """
     model.eval()
-    running_loss = 0.0
     running_coord_loss = 0.0
-    running_shape_loss = 0.0
 
     with torch.no_grad():
         for imgs, targets in loader:
             imgs = imgs.to(device)
-            coords_true = targets[0].to(device)  # [x, y] coordinates
-            shape_class = targets[1].to(device)  # shape class
+            coords_true, _ = targets
+            coords_true = coords_true.to(device)
 
-            coords_pred, shape_logits = model(imgs)
-
-            # Calculate losses
+            coords_pred, _ = model(imgs)
             loss_coords = coord_criterion(coords_pred, coords_true)
-            loss_shape = shape_criterion(shape_logits, shape_class)
-            # Use average of losses to balance their contributions
-            total_loss = (loss_coords + loss_shape) / 2
-            
-            running_loss += total_loss.item()
             running_coord_loss += loss_coords.item()
-            running_shape_loss += loss_shape.item()
 
-    return (running_loss / len(loader),
-            running_coord_loss / len(loader),
-            running_shape_loss / len(loader))
+    return running_coord_loss / len(loader)
 
 
 def main(project: str,
@@ -112,17 +77,15 @@ def main(project: str,
          patience: int = 10,
          model_name: str = 'google/vit-base-patch16-224') -> str:
     """
-    Orchestrates data loading, model training, and evaluation.
-
-    Returns:
-        Path to the best saved model.
+    Orchestrates data loading, model training, and evaluation, focusing on coordinate loss only.
+    Labels CSV must have normalized x, y, width, and integer 'ratio' columns.
+    Requires a JSON file listing ratio classes for model initialization.
     """
-    print("Starting training of ViTCropper...")
+    print("Starting training of IMLCropModel (coord only)...")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
-    
-    # If no stage provided, find the latest one
+
     if stage is None:
         try:
             stage = find_latest_stage(project)
@@ -130,12 +93,11 @@ def main(project: str,
         except ValueError as e:
             print(f"Error: {e}")
             return
-    
-    # Form the directory name from the stage number
+
     stage_dir = f"stage_{stage}"
-        
-    labels_file = os.path.join(project, f'{stage_dir}_crop_labels.csv')
-    model_path = os.path.join(project, f'{stage_dir}_crop_model.pth')
+    samples_file = os.path.join(project, f"{stage_dir}_crop_labels.csv")
+    ratios_file = os.path.join(project, f"{stage_dir}_crop_ratios.json")
+    model_path = os.path.join(project, f"{stage_dir}_crop_model.pth")
     epoch_log_file = os.path.join(project, f"{stage_dir}_crop_epoch_log.csv")
     image_dir = os.path.join(project, stage_dir)
 
@@ -145,109 +107,82 @@ def main(project: str,
             os.remove(fp)
             print(f"Removed: {fp}")
 
-    if not os.path.exists(epoch_log_file):
-        with open(epoch_log_file, 'w') as f:
-            f.write("epoch,tr_coord_loss,tr_shape_loss,val_coord_loss,val_shape_loss\n")
+    # Initialize log
+    with open(epoch_log_file, 'w') as f:
+        f.write("epoch,train_coord_loss,val_coord_loss\n")
 
-    # Read the CSV file to determine the unique shape classes
-    try:
-        # Read the labels file
-        df = pd.read_csv(labels_file)
-        
-        # Get shape classes from the appropriate column
-        if 'crop_shape' in df.columns:
-            # Get unique shape classes
-            if df['crop_shape'].dtype == 'object':
-                # If they're strings, convert to integers using size_conversion
-                shape_ints = df['crop_shape'].apply(lambda x: size_conversion.get_int_from_shape(x) if isinstance(x, str) else int(x))
-            else:
-                # Already integers
-                shape_ints = df['crop_shape']
-            
-            # Find all unique class values used in the dataset
-            unique_shape_classes = sorted(shape_ints.unique())
-            
-            # Number of output neurons equals the number of unique classes
-            num_shape_classes = len(unique_shape_classes)
-            
-            print(f"Found {num_shape_classes} unique shape classes in dataset: {unique_shape_classes}")
-            print(f"Using {num_shape_classes} output neurons for shape classification")
-        else:
-            print(f"Error: CSV file does not contain 'crop_shape' column")
-            return None
-    except Exception as e:
-        print(f"Error reading CSV file: {e}")
-        return None
+    # Load ratio classes for model head (unused in loss)
+    if not os.path.exists(ratios_file):
+        raise FileNotFoundError(f"Ratio definitions not found: {ratios_file}")
+    with open(ratios_file, 'r') as rf:
+        ratios = json.load(rf)
+    num_ratio_classes = len(ratios)
+    print(f"Model will use {num_ratio_classes} ratio classes (not tracked in loss)")
 
     # Data loaders
-    train_loader, val_loader = get_loaders(labels_file, image_dir,
-                                           batch_size=batch_size,
-                                           val_split=val_split)
-    print(f"Data: {len(train_loader.dataset)} train / {len(val_loader.dataset)} val samples")
+    train_loader, val_loader = get_loaders(
+        samples_file,
+        image_dir,
+        batch_size=batch_size,
+        val_split=val_split
+    )
 
-    # Initialize model and optimizer
-    model = ViTCropper(pretrained_model_name=model_name,
-                       num_shape_classes=num_shape_classes).to(device)
+    # Model setup
+    model = IMLCropModel(pretrained_model_name=model_name,
+                         num_ratio_classes=num_ratio_classes).to(device)
     if os.path.exists(model_path):
         state = torch.load(model_path, map_location=device)
         model.load_state_dict(state, strict=False)
         print(f"Loaded weights from {model_path}")
 
     coord_criterion = nn.MSELoss()
-    shape_criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.1, patience=patience//2, verbose=True)
 
-    best_coord_loss = float('inf')
-    best_shape_loss = float('inf')
-    epochs_no_improve = 0
-    
+    best_coord = float('inf')
+    no_improve = 0
+
+    # Training loop
     for epoch in range(1, num_epochs + 1):
         print(f"Epoch {epoch}/{num_epochs}")
-        
-        # Train and get separate losses
-        train_loss, train_coord_loss, train_shape_loss = train_one_epoch(
-            model, train_loader, coord_criterion, shape_criterion, optimizer, device)
-        
-        # Evaluate and get separate losses
-        val_loss, val_coord_loss, val_shape_loss = eval_one_epoch(
-            model, val_loader, coord_criterion, shape_criterion, device)
-        
-        # Use the average loss from eval function for learning rate scheduler
-        scheduler.step(val_loss)
+        tr_coord = train_one_epoch(
+            model, train_loader, coord_criterion, optimizer, device)
+        val_coord = eval_one_epoch(
+            model, val_loader, coord_criterion, device)
 
-        # Log all losses in a concise format
-        print(f"Loss - Train: {train_loss:.4f} ({train_coord_loss:.4f}, {train_shape_loss:.4f}), Val: {val_loss:.4f} ({val_coord_loss:.4f}, {val_shape_loss:.4f})")
+        scheduler.step(val_coord)
 
-        
-        # Write to epoch log CSV
+        print(f"Train Coord Loss: {tr_coord:.4f}")
+        print(f"Val   Coord Loss: {val_coord:.4f}")
+
+        # Log metrics
         with open(epoch_log_file, 'a') as f:
-            f.write(f"{epoch},{train_coord_loss:.6f},{train_shape_loss:.6f},{val_coord_loss:.6f},{val_shape_loss:.6f}\n")
+            f.write(f"{epoch},{tr_coord:.6f},{val_coord:.6f}\n")
 
-        # Save model only if both coord and shape losses have improved independently
-        coord_improved = val_coord_loss < best_coord_loss
-        shape_improved = val_shape_loss < best_shape_loss
-        
-        if coord_improved and shape_improved:
-            best_coord_loss = val_coord_loss
-            best_shape_loss = val_shape_loss
-            epochs_no_improve = 0
-            
+        gap_abs  = abs(tr_coord - val_coord)
+        gap_rel  = gap_abs / (val_coord + 1e-8)
+
+        improved_enough = val_coord < best_coord * 0.9
+        gap_ok = gap_rel <= 0.2
+
+        if (val_coord < best_coord) and (gap_ok or improved_enough):
+            best_coord = val_coord
+            no_improve = 0
             torch.save(model.state_dict(), model_path)
-            print(f"Saved best model with losses - Coord: {best_coord_loss:.6f}, Shape: {best_shape_loss:.6f}")
+            print(f"Saved best model (coord: {best_coord:.6f})")
         else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= patience:
+            no_improve += 1
+            if no_improve >= patience:
                 print("Early stopping triggered")
                 break
 
-    print(f"Training complete. Best validation losses - Coord: {best_coord_loss:.6f}, Shape: {best_shape_loss:.6f}")
+    print(f"Training complete. Best coord: {best_coord:.6f}")
     return model_path
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Train ViTCropper model.")
+    parser = argparse.ArgumentParser(description="Train IMLCropModel model (coord only).")
     parser.add_argument('--project', required=True,
                         help='Root project directory containing data and labels')
     parser.add_argument('--stage', type=int, default=None,
@@ -263,7 +198,7 @@ if __name__ == '__main__':
     parser.add_argument('--patience', '-p', type=int, default=10,
                         help='Early stopping patience')
     parser.add_argument('--model', '-m', type=str,
-                        default='google/vit-base-patch16-224',
+                        default='google/vit-base-patch16-384',
                         help='HuggingFace ViT model name')
     args = parser.parse_args()
     main(
