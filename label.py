@@ -207,13 +207,11 @@ def main(project: str, stage: int = None):
         ratios = []
 
     print(f"Starting app: {len(image_files)} images, {len(labels)} labels, {len(ratios)} ratios.")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5051, debug=True)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Launch web interface for labeling images.")
-    parser.add_argument('--project', type=str, required=True,
-                        help='Project root containing image stage directories')
-    parser.add_argument('--stage', type=int, default=None,
-                        help='Stage number (e.g., 1). If omitted, uses latest.')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--project', type=str, required=True)
+    parser.add_argument('--stage', type=int, default=None)
     args = parser.parse_args()
     main(args.project, args.stage)

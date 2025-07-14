@@ -34,14 +34,6 @@ def resize_and_pad_square(image, target_size=384):
 
 class IMLCropDataset(Dataset):
     def __init__(self, samples_path: str, images_path: str):
-        """
-        Dataset for cropping with normalized x, y, width and integer ratio class.
-        Uses an integer index column ('index') in the CSV to reference images in a sorted directory listing.
-
-        Args:
-            samples_path: CSV file with columns ['index', 'x', 'y', 'width', 'ratio'], where 'index' is an integer index
-            images_path: Directory containing images
-        """
         self.df = pd.read_csv(samples_path)
         self.img_dir = images_path
 
@@ -94,26 +86,14 @@ class IMLCropDataset(Dataset):
         return img, (coords, ratio_class)
 
 
-def get_loaders(samples_path: str,
-                images_path: str,
-                batch_size: int = 8,
-                val_split: float = 0.2,
-                num_workers: int = 4,
-                seed: int = 42):
-    """
-    Create train and validation DataLoaders from a CSV and images directory.
-
-    Args:
-        samples_path: CSV with crop labels
-        images_path: Directory with image files
-        batch_size: batch size
-        val_split: fraction of data for validation
-        num_workers: DataLoader workers count
-        seed: random seed for splitting
-
-    Returns:
-        train_loader: DataLoader, val_loader: DataLoader
-    """
+def get_loaders(
+    samples_path: str,
+    images_path: str,
+    batch_size: int = 8,
+    val_split: float = 0.2,
+    num_workers: int = 4,
+    seed: int = 42
+):
     torch.manual_seed(seed)
     dataset = IMLCropDataset(samples_path, images_path)
     val_size = int(len(dataset) * val_split)
